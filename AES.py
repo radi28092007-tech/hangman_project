@@ -64,8 +64,9 @@ def authentication():
         print("0 - Forgotten Password")
         print("1 - Register")
         print("2 - Login")
-        print("3 - Exit")
-        choice = input("Enter your choice (0-3): ").strip()
+        print("3 - Delete Account")
+        print("4 - Exit")
+        choice = input("Enter your choice (0-4): ").strip()
 
         if choice == "0":
             username = input("Enter your username: ").strip()
@@ -210,6 +211,58 @@ def authentication():
                 attempts += 1  
 
         elif choice == "3":
+            username = input("Enter your username: ").strip()
+            password = getpass(prompt="Enter your password: ", echo_char="*").strip()
+            data = load_data()
+
+            matching_user = next((user for user in data if user.get("username") == username), None)
+
+            if matching_user is None:
+                print("User doesn't exist")
+                attempts += 1
+                continue
+
+            user_salt = matching_user.get("salt")
+            if not user_salt:
+                print("Account data is corrupted.")
+                attempts += 1
+                continue
+
+            _, hashed_attempt = secure_hash_password(password, salt_hex=user_salt)
+            if not secrets.compare_digest(hashed_attempt, matching_user.get("password", "")):
+                print("Invalid password")
+                attempts += 1
+                continue
+
+            saved_totp_secret = matching_user.get("totp_secret")
+            if not saved_totp_secret:
+                print("This profile does not have 2FA configured.")
+                attempts += 1
+                continue
+
+            decrypted_secret = cipher.decrypt(saved_totp_secret.encode("utf-8")).decode("utf-8")
+            totp = pyotp.TOTP(decrypted_secret)
+
+            deleted = False
+            for delete_attempt in range(3):
+                print(f"\n--- DELETE ACCOUNT VERIFICATION (Attempts left: {3 - delete_attempt}) ---")
+                user_code = input("Enter the 6-digit code from your authenticator app: ").strip()
+
+                if totp.verify(user_code, valid_window=1):
+                    data = [user for user in data if user.get("username") != username]
+                    with open(pass_path, "w") as file:
+                        json.dump(data, file, indent=4)
+                    print("Account was successfully deleted")
+                    deleted = True
+                    attempts = 0
+                    break
+                else:
+                    print("Incorrect 2FA code. Please verify and try again.")
+
+            if not deleted:
+                attempts += 1
+
+        elif choice == "4":
             print("Thanks for using the program")
             return False
         else:
