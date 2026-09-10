@@ -2,38 +2,32 @@ import secrets
 from hangman_words import words
 import time
 from AES import authentication
-import json
-import os
+import string
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.table import Table
+from rich.theme import Theme
+from rich.text import Text
+from database import load_scores, save_score
  
-SCORES_FILE = "scores.json"
+console = Console(theme=Theme({"prompt": "#C8A2C8"}))
 
 def num_of_spaces(word):
     return word.count(" ")
 
-def load_scores():
-    if os.path.exists(SCORES_FILE):
-        with open(SCORES_FILE, "r") as file:
-            try:
-                return json.load(file)
-            except json.JSONDecodeError:
-                return {}
-    return {}
-
-def save_score(username, points, answer):
-    scores = load_scores()
-    
-    if username not in scores or not isinstance(scores[username], dict):
-        scores[username] = {"score": 0, "guessed_words": []}
-
-    scores[username]["score"] += points
-
-    if points > 0 and answer not in scores[username]["guessed_words"]:
-        scores[username]["guessed_words"].append(answer)
-
-    print(f"Guessed words history for {username}: {scores[username]['guessed_words']}")
-
-    with open(SCORES_FILE, "w") as file:
-        json.dump(scores, file, indent=4)
+def ask_menu_choice(prompt, choices):
+    choices_text = "/".join(choices)
+    while True:
+        choice = console.input(
+            f"[bold yellow]{prompt}[/bold yellow] "
+            f"[bold #E6B3FF][{choices_text}][/bold #E6B3FF]: "
+        ).strip()
+        if choice in choices:
+            return choice
+        console.print()
+        console.print("[bold red]Please choose one of the displayed options.[/bold red]")
+        console.print()
 
 hangman_art = {0: ("  ", "  ", "  "), 
                1: (" o ", "  ", "  "),
@@ -45,32 +39,49 @@ hangman_art = {0: ("  ", "  ", "  "),
 
 def display_man(wrong_guesses):
     for part in hangman_art[wrong_guesses]:
-        print(part)
+        console.print(Text(part, style="bright_green"))
 
 def display_hint(hint):
-    print(" ".join(hint))
+    console.print(" ".join(f"[bold cyan]{character}[/bold cyan]" for character in hint))
 
 def death():
-    print(" |/ ")
-    print(" |\\ ")
+    print()
+    console.print(Text(" |/ ", style="orange1"))
+    console.print(Text(" |\\ ", style="orange1"))
     time.sleep(1)  
-    print(" ___ ")
-    print("|   |")
-    print("|___|")
+    console.print(Text(" ___ ", style="orange1"))
+    console.print(Text("|   |", style="orange1"))
+    console.print(Text("|___|", style="orange1"))
 
 def display_game_info():
-    print("\n--- GAME INFO ---")
-    print("Welcome to Hangman!")
-    print("Try to guess the word by suggesting letters.")
-    print("You have 6 attempts to guess wrong letters before you lose.")
-    print("Your score increases based on the number of spaces in the word.")
-    print("Good luck!\n")
+    console.print(
+        Panel(
+            "[bold cyan]Welcome to Hangman![/bold cyan]\n"
+            "Try to guess the word by suggesting letters.\n"
+            "You have 6 attempts to guess wrong letters before you lose.\n"
+            "Your score increases based on the number of spaces in the word.\n\n"
+            "[yellow]Good luck![/yellow]",
+            title="[bold]GAME INFO[/bold]",
+            border_style="cyan",
+        )
+    )
+
+def sign_out(username):
+    console.print(f"[cyan]Goodbye, [bold yellow]{username}[/bold yellow]! Signing out...[/cyan]")
+    return True
+
 
 def play_hangman(username):
 
     while True:
+
         scores = load_scores()
-        user_data = scores.get(username, {"score": 0, "guessed_words": []})
+        user_data = scores.get(username, {
+            "score": 0,
+            "guessed_words": [],
+            "wins": 0,
+            "losses": 0,
+        })
         user_score = user_data.get("score", 0)
         guessed_words = user_data.get("guessed_words", [])
         guessed_words_lower = [w.lower() for w in guessed_words]
@@ -78,8 +89,8 @@ def play_hangman(username):
         
         # Word pool guard check
         if len(guessed_words_lower) >= len(words_pool_lower):
-            print("\nYou have guessed all the words, congratulations!")
-            print("Returning to main menu...")
+            console.print(Panel("[bold green]You have guessed all the words, congratulations![/bold green]", border_style="green"))
+            console.print("[dim]Returning to main menu...[/dim]")
             return  
         
 
@@ -95,14 +106,18 @@ def play_hangman(username):
         while True:
             display_man(wrong_guesses)
             display_hint(hint)
-            guess = input("guess a letter: ").lower()
+            guess = Prompt.ask("[bold yellow]Guess a letter[/bold yellow]").lower()
             
             if len(guess) != 1:
-                print("one letter at a time")
+                console.print("[yellow]One letter at a time.[/yellow]")
+                continue
+
+            if guess not in string.ascii_letters:
+                console.print("[yellow]Only letters.[/yellow]")
                 continue
 
             if guess in guessed_letters:
-                print("you already guessed that letter")
+                console.print("[yellow]You already guessed that letter.[/yellow]")
                 continue
             guessed_letters.add(guess)
 
@@ -117,37 +132,51 @@ def play_hangman(username):
                 display_man(wrong_guesses)
                 death()
                 save_score(username, 0, answer)  
-                print(f"your score is {user_score}")
+                updated_scores = load_scores()
+                updated_user = updated_scores[username]
+                console.print(f"[bold]Your score is:[/bold] {updated_user['score']}")
+                console.print(f"[green]Wins:[/green] {updated_user['wins']} | [red]Losses:[/red] {updated_user['losses']}")
 
-                again = input(f"you lost, the word was {answer}, play again? (y/n): ").lower()
+                console.print(Panel(f"[bold red]You lost![/bold red]\nThe word was [yellow]{answer}[/yellow]", title="GAME OVER", border_style="red"))
+                again = Prompt.ask("Play again?", choices=["y", "n"], default="n").lower()
                 if again == "y":
                     break  
                 else:
-                    print("Returning to main menu...")
+                    console.print("[dim]Returning to main menu...[/dim]")
                     return 
 
             if "_" not in hint:
-                print(f"you won, the word was {answer}")
+                console.print(Panel(f"[bold green]You won![/bold green]\nThe word was [cyan]{answer}[/cyan]", title="SUCCESS", border_style="green"))
 
                 gained_points = num_of_spaces(answer) + 1   
                 save_score(username, gained_points, answer)
                 
                 updated_scores = load_scores()
-                print(f"your score is {updated_scores[username]['score']}")
+                updated_user = updated_scores[username]
+                console.print(f"[bold]Your score is:[/bold] {updated_user['score']}")
+                console.print(f"[green]Wins:[/green] {updated_user['wins']} | [red]Losses:[/red] {updated_user['losses']}")
 
-                again = input(f"the word was {answer}, play again? (y/n): ").lower()
+                again = Prompt.ask("Play again?", choices=["y", "n"], default="n").lower()
                 if again == "y":
                     break  
                 else:
-                    print("Returning to main menu...")
+                    console.print("[dim]Returning to main menu...[/dim]")
                     return       
 
 def main(username):
-    print(f"Welcome, {username}!")
 
     while True:
-        print("\nMENU: 0 - Game info, 1 - Play Hangman, 2 - View Scoreboard, 3 - Your guessed words, 4 - Exit")
-        choice = input("Enter your choice (0-4): ").strip()
+        console.print(Panel(
+            "[cyan]0[/cyan] - Game info\n"
+            "[cyan]1[/cyan] - Play Hangman\n"
+            "[cyan]2[/cyan] - View Scoreboard\n"
+            "[cyan]3[/cyan] - Your guessed words\n"
+            "[cyan]4[/cyan] - Exit\n"
+            "[cyan]5[/cyan] - Sign Out",
+            title="[bold]MAIN MENU[/bold]",
+            border_style="blue",
+        ))
+        choice = ask_menu_choice("Enter your choice", ["0", "1", "2", "3", "4", "5"])
 
         if choice == "0":
             display_game_info()
@@ -158,22 +187,64 @@ def main(username):
         elif choice == "2":
             scores = load_scores()
             if not scores:
-                print("No scores available.")
+                console.print("[yellow]No scores available.[/yellow]")
             else:
-                print("\n--- Scoreboard ---")
                 compiled_scores = []
                 for user, data in scores.items():
                     if isinstance(data, dict):
                         score = data.get("score", 0)
+                        wins = data.get("wins", 0)
+                        losses = data.get("losses", 0)
                     else:
                         score = data
+                        wins = 0
+                        losses = 0
 
-                    compiled_scores.append((user, score))
+                    total_games = wins + losses
+                    win_ratio = wins / total_games if total_games else 0
+                    compiled_scores.append((user, score, win_ratio))
 
-                compiled_scores.sort(key=lambda item: item[1], reverse=True)
+                compiled_scores.sort(key=lambda item: (item[1], item[2]), reverse=True)
 
-                for user, score in compiled_scores:
-                    print(f"{user}: {score} points")
+                table = Table(title="SCOREBOARD", border_style = "cyan")
+                table.add_column("Rank", style = "yellow", justify = "center")
+                table.add_column("User", style = "cyan")
+                table.add_column("Score", style = "green", justify = "right")
+                table.add_column("Wins", style = "green", justify = "right")
+                table.add_column("Losses", style = "red", justify = "right")
+                table.add_column("Win Ratio", justify = "right")
+                table.add_column("Total Games", style = "yellow", justify = "right")
+
+
+                for rank, (user, score, win_ratio) in enumerate(compiled_scores, start=1):
+                    user_data = scores[user]
+                    wins = user_data.get("wins", 0) if isinstance(user_data, dict) else 0
+                    losses = user_data.get("losses", 0) if isinstance(user_data, dict) else 0
+                    total_games = user_data.get("total_games", wins + losses) if isinstance(user_data, dict) else 0
+                    display_user = f"[bold yellow]{user}[/bold yellow]" if user == username else user
+
+                    if win_ratio <= 0.20:
+                        win_ratio_style = "bold red"
+                    elif win_ratio > 0.20 and win_ratio <= 0.40:
+                        win_ratio_style = "orange_red1"
+                    elif win_ratio > 0.40 and win_ratio <= 0.60:
+                        win_ratio_style = "bright_yellow"
+                    elif win_ratio > 0.60 and win_ratio <= 0.80:
+                        win_ratio_style = "bright_green"
+                    else:
+                        win_ratio_style = "magenta"
+
+                    table.add_row(
+                        str(rank),
+                        display_user,
+                        str(score),
+                        str(wins),
+                        str(losses),
+                        f"[{win_ratio_style}]{win_ratio:.1%}[/{win_ratio_style}]",
+                        str(total_games),
+                    )
+
+                console.print(table)
 
         elif choice == "3":
             scores = load_scores()
@@ -185,18 +256,29 @@ def main(username):
                 history = []
             
             if not history:
-                print("No words have been guessed so far")
+                console.print("[yellow]No words have been guessed so far.[/yellow]")
             else:
-                print("\n--- Guessed words ---")
-                print(", ".join(history))
+                console.print(Panel(", ".join(history), title="GUESSED WORDS", border_style="cyan"))
 
         elif choice == "4":
-            print("Thanks for using the program")
-            break
+            console.print("[bold cyan]Thanks for using the program.[/bold cyan]")
+            return False
+
+        elif choice == "5":
+            if sign_out(username):
+                return True
+
         else:
-            print("Invalid choice, please try again")
+            console.print("[bold red]Invalid choice, please try again.[/bold red]")
+
+
 
 if __name__ == "__main__":
-    user = authentication()
-    if user:
-        main(user)
+    while True:
+        user = authentication()
+        if not user:
+            break
+
+        should_continue = main(user)
+        if not should_continue:
+            break
