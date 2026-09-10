@@ -3,5 +3,5 @@ cryptography
 keyring
 pyotp
 rich
-sqlcipher3-binary
+sqlcipher3-wheels
 pyinstaller
