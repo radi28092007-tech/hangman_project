@@ -1,0 +1,7 @@
+argon2-cffi
+cryptography
+keyring
+pyotp
+rich
+sqlcipher3-binary
+pyinstaller
