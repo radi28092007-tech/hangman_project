@@ -1,38 +1,70 @@
 import os
-import json
-import hashlib
-import secrets
 from cryptography.fernet import Fernet
 from getpass import getpass
-import pyotp  
+import pyotp 
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.theme import Theme
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.low_level import Type
+import keyring
+from database import delete_user, load_data, save_data
 
-KEY_FILE = "secret.key"
-pass_path = r"passwords.json"
+console = Console(theme=Theme({"prompt": "#C8A2C8"}))
 
-# Key management
-if os.path.exists(KEY_FILE):
-    with open(KEY_FILE, "rb") as file:
-        secret_key = file.read()
-else:
-    secret_key = Fernet.generate_key()
-    with open(KEY_FILE, "wb") as file:
-        file.write(secret_key)
-
-# Using the AES key as a secret Pepper to strengthen hashes
-SECRET_PEPPER = secret_key.decode("utf-8")
+KEYRING_SERVICE = "HangmanGame"
+KEYRING_USERNAME = "fernet-encryption-key"
+LEGACY_KEY_FILE = "secret.key"
 
 
-def secure_hash_password(password, salt_hex=None):
-    if salt_hex is None:
-        salt_bytes = secrets.token_bytes(16) 
+def load_secret_key():
+    stored_key = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+    if stored_key is not None:
+        return stored_key.encode("ascii")
+
+    if os.path.exists(LEGACY_KEY_FILE):
+        with open(LEGACY_KEY_FILE, "rb") as file:
+            secret_key = file.read()
     else:
-        salt_bytes = bytes.fromhex(salt_hex)
+        secret_key = Fernet.generate_key()
 
-    combined_credential = password + SECRET_PEPPER
-    password_bytes = combined_credential.encode("utf-8")
+    keyring.set_password(
+        KEYRING_SERVICE,
+        KEYRING_USERNAME,
+        secret_key.decode("ascii"),
+    )
 
-    hashed_bytes = hashlib.pbkdf2_hmac("sha256", password_bytes, salt_bytes, iterations=600000)
-    return salt_bytes.hex(), hashed_bytes.hex()
+    if os.path.exists(LEGACY_KEY_FILE):
+        os.remove(LEGACY_KEY_FILE)
+
+    return secret_key
+
+
+secret_key = load_secret_key()
+
+
+
+password_hasher = PasswordHasher(
+    time_cost = 3,
+    memory_cost = 65536,
+    parallelism = 4,
+    hash_len = 32,
+    salt_len = 16,
+    type = Type.ID,
+)
+
+
+def hash_password(password):
+    return password_hasher.hash(password)
+
+
+def verify_password(password, password_hash):
+    try:
+        return password_hasher.verify(password_hash, password)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
 
 def is_strong_password(password):
     special_chars = "!@#$%^&*()-_=+[]{}|;:'\",.<>?/`~"
@@ -42,16 +74,18 @@ def is_strong_password(password):
             any(char.isupper() for char in password) and 
             any(char in special_chars for char in password))
 
-def load_data():
-    if os.path.exists(pass_path):
-        with open(pass_path, "r") as file:
-            try:
-                data = json.load(file)
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
-                pass
-    return []
+def ask_menu_choice(prompt, choices):
+    choices_text = "/".join(choices)
+    while True:
+        choice = console.input(
+            f"[bold yellow]{prompt}[/bold yellow] "
+            f"[bold #E6B3FF][{choices_text}][/bold #E6B3FF]: "
+        ).strip()
+        if choice in choices:
+            return choice
+        console.print()
+        console.print("[bold red]Please choose one of the displayed options.[/bold red]")
+        console.print()
 
 
 # Main logic
@@ -60,13 +94,19 @@ def authentication():
     cipher = Fernet(secret_key)  # Initialize cipher globally for convenience
     
     while attempts < 3:
-        print(f"\n--- AUTHENTICATION (Attempts left: {3 - attempts}) ---")
-        print("0 - Forgotten Password")
-        print("1 - Register")
-        print("2 - Login")
-        print("3 - Delete Account")
-        print("4 - Exit")
-        choice = input("Enter your choice (0-4): ").strip()
+        console.print(
+            Panel(
+                "[cyan]0[/cyan] - Forgotten Password\n"
+                "[cyan]1[/cyan] - Register\n"
+                "[cyan]2[/cyan] - Login\n"
+                "[cyan]3[/cyan] - Delete Account\n"
+                "[cyan]4[/cyan] - Exit",
+                title=f"[bold cyan]AUTHENTICATION[/bold cyan] "
+                f"[yellow](Attempts left: {3 - attempts})[/yellow]",
+                border_style="cyan",
+            )
+        )
+        choice = ask_menu_choice("Enter your choice", ["0", "1", "2", "3", "4"])
 
         if choice == "0":
             username = input("Enter your username: ").strip()
@@ -100,12 +140,10 @@ def authentication():
                         print("At least 8 characters, at least one number, one uppercase letter, and special character")
                         continue
 
-                    new_salt, new_hash = secure_hash_password(new_password)
-                    user_record["salt"] = new_salt
-                    user_record["password"] = new_hash
+                    user_record["password"] = hash_password(new_password)
+                    user_record.pop("salt", None)
 
-                    with open(pass_path, "w") as file:
-                        json.dump(data, file, indent=4)
+                    save_data(data)
 
                     print("Password has been successfully reset, you can now login")
                     break
@@ -134,7 +172,7 @@ def authentication():
                 print("At least 8 characters, at least one number, one uppercase letter, and special character")
                 continue
                 
-            salt_hex, hashed_hex = secure_hash_password(password)
+            password_hash = hash_password(password)
 
             totp_secret = pyotp.random_base32()
 
@@ -145,19 +183,23 @@ def authentication():
             print(f"    {totp_secret}  ")
             input("Press Enter once you have saved/entered this key into your app...")
 
+            registration_code = input("Enter the current 6-digit code from your authenticator app: ").strip()
+            if not pyotp.TOTP(totp_secret).verify(registration_code, valid_window=1):
+                print("Invalid 2FA code. Registration was canceled.")
+                attempts += 1
+                continue
+
             encrypted_totp = cipher.encrypt(totp_secret.encode("utf-8")).decode("utf-8")
 
             new_entry = {
                 "username": username,
-                "salt": salt_hex,
-                "password": hashed_hex,
+                "password": password_hash,
                 "totp_secret": encrypted_totp  
             }
 
             data.append(new_entry)
 
-            with open(pass_path, "w") as file:
-                json.dump(data, file, indent=4)
+            save_data(data)
             print("Registration was successful!")
             attempts = 0  
 
@@ -173,13 +215,9 @@ def authentication():
             for user in data:
                 if user["username"] == username:
                     user_found = True
-                    user_salt = user["salt"]
                     saved_totp_secret = user.get("totp_secret") 
-                    
-                    _, hashed_attempt = secure_hash_password(password, salt_hex=user_salt)
 
-                    if secrets.compare_digest(hashed_attempt, user["password"]):
-                        password_correct = True
+                    password_correct = verify_password(password, user.get("password", ""))
                     break
 
             if user_found and password_correct:
@@ -222,14 +260,12 @@ def authentication():
                 attempts += 1
                 continue
 
-            user_salt = matching_user.get("salt")
-            if not user_salt:
+            if not matching_user.get("password"):
                 print("Account data is corrupted.")
                 attempts += 1
                 continue
 
-            _, hashed_attempt = secure_hash_password(password, salt_hex=user_salt)
-            if not secrets.compare_digest(hashed_attempt, matching_user.get("password", "")):
+            if not verify_password(password, matching_user["password"]):
                 print("Invalid password")
                 attempts += 1
                 continue
@@ -249,9 +285,7 @@ def authentication():
                 user_code = input("Enter the 6-digit code from your authenticator app: ").strip()
 
                 if totp.verify(user_code, valid_window=1):
-                    data = [user for user in data if user.get("username") != username]
-                    with open(pass_path, "w") as file:
-                        json.dump(data, file, indent=4)
+                    delete_user(username)
                     print("Account was successfully deleted")
                     deleted = True
                     attempts = 0
