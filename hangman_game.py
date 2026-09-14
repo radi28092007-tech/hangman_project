@@ -9,7 +9,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich.theme import Theme
 from rich.text import Text
-from database import load_scores, save_score
+from database import load_scores, save_score, initialize_database
  
 console = Console(theme=Theme({"prompt": "#C8A2C8"}))
 
@@ -191,17 +191,13 @@ def main(username):
             else:
                 compiled_scores = []
                 for user, data in scores.items():
-                    if isinstance(data, dict):
-                        score = data.get("score", 0)
-                        wins = data.get("wins", 0)
-                        losses = data.get("losses", 0)
-                    else:
-                        score = data
-                        wins = 0
-                        losses = 0
+                    score = data.get("score", 0)
+                    wins = data.get("wins", 0)
+                    losses = data.get("losses", 0)
 
                     total_games = wins + losses
                     win_ratio = wins / total_games if total_games else 0
+
                     compiled_scores.append((user, score, win_ratio))
 
                 compiled_scores.sort(key=lambda item: (item[1], item[2]), reverse=True)
@@ -274,6 +270,8 @@ def main(username):
 
 
 if __name__ == "__main__":
+    initialize_database()
+    
     while True:
         user = authentication()
         if not user:
